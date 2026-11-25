@@ -1,0 +1,107 @@
+# ПРОВЕРКА САЙТА «МИР СУЩЕСТВ»
+# Запуск: открой этот файл и нажми ▶ (сервер при этом можно не останавливать). Файл менять не нужно.
+
+import os
+import re
+import tempfile
+
+passed = 0
+failed = 0
+
+
+def check(condition, what):
+    global passed, failed
+    if condition:
+        passed += 1
+        print("  ✅", what)
+    else:
+        failed += 1
+        print("  ❌", what)
+
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+print("Проверяю сайт...\n")
+try:
+    import storage
+    storage.FILE = os.path.join(tempfile.mkdtemp(), "history.json")   # тест не трогает твою историю
+    from app import app
+    import creatures as creatures_module
+except Exception as error:
+    print("❌ Сайт не запускается:", type(error).__name__, "-", error)
+    print("Подсказка: открой app.py и нажми ▶ — Python покажет строку с ошибкой.")
+    raise SystemExit
+
+app.logger.disabled = True   # ошибки сервера не печатаем целиком — тест сам скажет, что не так
+CREATURES = getattr(creatures_module, "CREATURES", None) or getattr(creatures_module, "creatures")
+client = app.test_client()
+
+
+def name_of(c):
+    return c["name"] if isinstance(c, dict) else c.name
+
+
+def get(url):
+    try:
+        r = client.get(url)
+        return r.status_code, r.get_data(as_text=True)
+    except Exception as error:
+        return 500, "ошибка: " + type(error).__name__ + " " + str(error)
+
+
+print("Шаблоны страниц (шаг 3):")
+for page in ["index.html", "creature.html", "battle.html"]:
+    text = open(os.path.join(HERE, page), encoding="utf-8").read()
+    check("ВСТАВЬ СЮДА" not in text, page + ": вставлен шаблон от AI (заглушки больше нет)")
+    check('{% extends "base.html" %}' in text or "{% extends 'base.html' %}" in text, page + ": начинается с {% extends \"base.html\" %}")
+    check("|safe" not in text.replace(" ", ""), page + ": нет |safe")
+    check(not re.search(r'<script[^>]+src=["\']https?://', text), page + ": нет чужих скриптов из интернета")
+
+print("\nГлавная страница:")
+code, html = get("/index.html")
+check(code == 200, "открывается (код " + str(code) + ")")
+check(all(name_of(c) in html for c in CREATURES), "на ней имена всех существ")
+check("creature-0.html" in html, "есть ссылки на карточки (creature-0.html …)")
+check("battle-0-1.html" in html, "есть ссылки на бои (battle-0-1.html …)")
+check('href="/' not in html, "все ссылки без / в начале (иначе сломаются на GitHub)")
+
+print("\nКарточка существа (шаг 4):")
+code, html = get("/creature-0.html")
+check(code == 200, "creature-0.html открывается (код " + str(code) + ")")
+check(name_of(CREATURES[0]) in html, "на карточке имя существа")
+
+print("\nСтраница боя (шаг 4):")
+code, html = get("/battle-0-1.html")
+check(code == 200, "battle-0-1.html открывается (код " + str(code) + ")")
+check(name_of(CREATURES[0]) in html and name_of(CREATURES[1]) in html, "на странице имена обоих бойцов")
+check(html.count("→") >= 2, "есть лог боя (строки с →)")
+check("Победитель" in html or "победитель" in html, "показан победитель")
+
+print("\nИстория боёв (шаг 5):")
+get("/battle-1-0.html")
+code, html = get("/history.html")
+check(code == 200, "history.html открывается")
+check(name_of(CREATURES[1]) in html and "⚔" in html, "бой, который только что прошёл, попал в историю")
+
+print("\nБезопасность (шаг 6):")
+evil = "<script>alert(1)</script>"
+first = CREATURES[0]
+old = first["name"] if isinstance(first, dict) else first.name
+try:
+    if isinstance(first, dict):
+        first["name"] = evil
+    else:
+        first.name = evil
+    code, html = get("/index.html")
+    check(evil not in html and "&lt;script&gt;" in html, "имя с <script> показывается как текст, а не выполняется")
+finally:
+    if isinstance(first, dict):
+        first["name"] = old
+    else:
+        first.name = old
+
+
+print("\nИтог:", passed, "пройдено,", failed, "не пройдено.")
+if failed == 0:
+    print("🎉 Сайт готов! Останови сервер (Ctrl+C), открой freeze.py и нажми ▶.")
+else:
+    print("Исправь строки с ❌. Ошибка в шаблоне — сверь его с чек-листом из уровня «Карта сайта и запросы к AI».")
